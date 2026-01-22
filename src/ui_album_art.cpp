@@ -323,13 +323,11 @@ void albumArtTask(void* param) {
                             Serial.printf("[ART] Opening JPEG with %d bytes\n", read);
                             if (jpeg.openRAM(jpgBuf, read, jpegDraw)) {
                                 jpeg.setPixelType(RGB565_LITTLE_ENDIAN);
-                                jpeg.setScale(0);  // Force full-resolution decode
                                 int w = jpeg.getWidth();
                                 int h = jpeg.getHeight();
+                                jpeg.close();
                                 jpeg_image_width = w;   // Store for callback
                                 jpeg_image_height = h;  // Store for callback
-                                jpeg_output_width = 0;
-                                jpeg_output_height = 0;
                                 Serial.printf("[ART] JPEG: %dx%d\n", w, h);
 
                                 // Allocate buffer for full decoded image
@@ -340,18 +338,52 @@ void albumArtTask(void* param) {
                                 decoded_buffer = (uint16_t*)heap_caps_malloc(decoded_size, MALLOC_CAP_SPIRAM);
 
                                 if (decoded_buffer) {
-                                    jpeg_decode_buffer = decoded_buffer;
-                                    // Clear decoded buffer to avoid stale tiles when decoder skips blocks
-                                    memset(decoded_buffer, 0, decoded_size);
+                                    int decode_scales[] = {0, 1, 2, 3};
+                                    int best_scale = -1;
+                                    int best_out_w = 0;
+                                    int best_out_h = 0;
 
-                                    // Decode full image at original size (no scaling)
-                                    jpeg.decode(0, 0, 0);
-                                    jpeg.close();
+                                    for (size_t s = 0; s < (sizeof(decode_scales) / sizeof(decode_scales[0])); s++) {
+                                        jpeg_output_width = 0;
+                                        jpeg_output_height = 0;
+                                        jpeg_decode_buffer = decoded_buffer;
+                                        memset(decoded_buffer, 0, decoded_size);
 
-                                    Serial.printf("[ART] Decoded %dx%d\n", w, h);
-                                    jpeg_decode_buffer = nullptr;
+                                        if (!jpeg.openRAM(jpgBuf, read, jpegDraw)) {
+                                            jpeg_decode_buffer = nullptr;
+                                            break;
+                                        }
+                                        jpeg.setPixelType(RGB565_LITTLE_ENDIAN);
+                                        jpeg.decode(0, 0, decode_scales[s]);
+                                        jpeg.close();
+                                        jpeg_decode_buffer = nullptr;
 
-                                    if (art_temp_buffer) {
+                                        Serial.printf("[ART] Decoded %dx%d (scale=%d)\n", w, h, decode_scales[s]);
+                                        Serial.printf("[ART] Output size: %dx%d (scaled)\n",
+                                            jpeg_output_width, jpeg_output_height);
+
+                                        if (jpeg_output_width * jpeg_output_height > best_out_w * best_out_h) {
+                                            best_out_w = jpeg_output_width;
+                                            best_out_h = jpeg_output_height;
+                                            best_scale = decode_scales[s];
+                                        }
+                                    }
+
+                                    if (best_scale >= 0 && art_temp_buffer) {
+                                        jpeg_output_width = 0;
+                                        jpeg_output_height = 0;
+                                        jpeg_decode_buffer = decoded_buffer;
+                                        memset(decoded_buffer, 0, decoded_size);
+
+                                        if (jpeg.openRAM(jpgBuf, read, jpegDraw)) {
+                                            jpeg.setPixelType(RGB565_LITTLE_ENDIAN);
+                                            jpeg.decode(0, 0, best_scale);
+                                            jpeg.close();
+                                        }
+                                        jpeg_decode_buffer = nullptr;
+                                        Serial.printf("[ART] Selected scale=%d, output=%dx%d\n",
+                                            best_scale, jpeg_output_width, jpeg_output_height);
+
                                         int out_w = jpeg_output_width > 0 ? jpeg_output_width : w;
                                         int out_h = jpeg_output_height > 0 ? jpeg_output_height : h;
                                         uint16_t* src_buffer = decoded_buffer;
