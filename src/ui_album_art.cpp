@@ -323,6 +323,7 @@ void albumArtTask(void* param) {
                             Serial.printf("[ART] Opening JPEG with %d bytes\n", read);
                             if (jpeg.openRAM(jpgBuf, read, jpegDraw)) {
                                 jpeg.setPixelType(RGB565_LITTLE_ENDIAN);
+                                jpeg.setScale(0);  // Force full-resolution decode
                                 int w = jpeg.getWidth();
                                 int h = jpeg.getHeight();
                                 jpeg_image_width = w;   // Store for callback
