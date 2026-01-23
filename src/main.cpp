@@ -11,7 +11,7 @@ LV_IMG_DECLARE(Sonos_idnu60bqes_1);
 
 static String saved_ssid;
 static String saved_pass;
-static uint32_t last_wifi_retry_ms = 0;
+static TaskHandle_t wifi_task_handle = NULL;
 
 static const char* wifiDisconnectReasonToString(uint8_t reason) {
     switch (reason) {
@@ -50,15 +50,29 @@ static const char* wifiDisconnectReasonToString(uint8_t reason) {
     }
 }
 
-static void startWiFiConnection(const char* context) {
-    if (saved_ssid.length() == 0) return;
+static void wifiTask(void* param) {
+    if (saved_ssid.length() == 0) {
+        vTaskDelete(NULL);
+        return;
+    }
+    vTaskDelay(pdMS_TO_TICKS(8000));  // Let TCP/IP stack and hosted link settle
     WiFi.mode(WIFI_STA);
     WiFi.setSleep(false);
     WiFi.setAutoReconnect(true);
-    WiFi.disconnect(true, true);  // Clear any stale state before connecting
-    vTaskDelay(pdMS_TO_TICKS(100));
     WiFi.begin(saved_ssid.c_str(), saved_pass.c_str());
-    Serial.printf("[WIFI] %s to '%s'", context, saved_ssid.c_str());
+    Serial.printf("[WIFI] Connecting to '%s'", saved_ssid.c_str());
+    int tries = 0;
+    while (WiFi.status() != WL_CONNECTED && tries++ < 40) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+        Serial.print(".");
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.printf("\n[WIFI] Connected - IP: %s\n", WiFi.localIP().toString().c_str());
+    } else {
+        Serial.println("\n[WIFI] Connection failed - will retry from settings");
+    }
+    wifi_task_handle = NULL;
+    vTaskDelete(NULL);
 }
 
 void setup() {
@@ -99,19 +113,8 @@ void setup() {
     // Brightness will be set after display_init() is called
     Serial.println("[DISPLAY] ESP32-P4 uses ST7701 backlight control (no PWM needed)");
 
-    if (ssid.length() > 0) {
-        vTaskDelay(pdMS_TO_TICKS(2000)); // Wait for WiFi hardware
-        startWiFiConnection("Connecting");
-        int tries = 0;
-        while (WiFi.status() != WL_CONNECTED && tries++ < 40) {
-            vTaskDelay(pdMS_TO_TICKS(500));
-            Serial.print(".");
-        }
-        if (WiFi.status() == WL_CONNECTED) {
-            Serial.printf("\n[WIFI] Connected - IP: %s\n", WiFi.localIP().toString().c_str());
-        } else {
-            Serial.println("\n[WIFI] Connection failed - will keep retrying in background");
-        }
+    if (ssid.length() > 0 && wifi_task_handle == NULL) {
+        xTaskCreatePinnedToCore(wifiTask, "WiFi", 4096, NULL, 1, &wifi_task_handle, 0);
     }
 
     lv_init();
@@ -217,13 +220,5 @@ void loop() {
     lv_timer_handler();
     processUpdates();
     checkAutoDim();  // Check if screen should be dimmed
-    if (saved_ssid.length() > 0 && WiFi.status() != WL_CONNECTED) {
-        uint32_t now = millis();
-        if (now - last_wifi_retry_ms > 10000) {  // Retry every 10s
-            last_wifi_retry_ms = now;
-            startWiFiConnection("Retrying connection");
-            Serial.println();
-        }
-    }
     vTaskDelay(pdMS_TO_TICKS(3));  // More efficient than delay() - allows other tasks to run
 }
