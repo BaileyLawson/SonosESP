@@ -9,6 +9,58 @@
 // Sonos logo
 LV_IMG_DECLARE(Sonos_idnu60bqes_1);
 
+static String saved_ssid;
+static String saved_pass;
+static uint32_t last_wifi_retry_ms = 0;
+
+static const char* wifiDisconnectReasonToString(uint8_t reason) {
+    switch (reason) {
+        case WIFI_REASON_AUTH_EXPIRE: return "AUTH_EXPIRE";
+        case WIFI_REASON_AUTH_LEAVE: return "AUTH_LEAVE";
+        case WIFI_REASON_ASSOC_EXPIRE: return "ASSOC_EXPIRE";
+        case WIFI_REASON_ASSOC_TOOMANY: return "ASSOC_TOOMANY";
+        case WIFI_REASON_NOT_AUTHED: return "NOT_AUTHED";
+        case WIFI_REASON_NOT_ASSOCED: return "NOT_ASSOCED";
+        case WIFI_REASON_ASSOC_LEAVE: return "ASSOC_LEAVE";
+        case WIFI_REASON_ASSOC_NOT_AUTHED: return "ASSOC_NOT_AUTHED";
+        case WIFI_REASON_DISASSOC_PWRCAP_BAD: return "DISASSOC_PWRCAP_BAD";
+        case WIFI_REASON_DISASSOC_SUPCHAN_BAD: return "DISASSOC_SUPCHAN_BAD";
+        case WIFI_REASON_BSS_TRANSITION_DISASSOC: return "BSS_TRANSITION_DISASSOC";
+        case WIFI_REASON_IE_INVALID: return "IE_INVALID";
+        case WIFI_REASON_MIC_FAILURE: return "MIC_FAILURE";
+        case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT: return "4WAY_HANDSHAKE_TIMEOUT";
+        case WIFI_REASON_GROUP_KEY_UPDATE_TIMEOUT: return "GROUP_KEY_UPDATE_TIMEOUT";
+        case WIFI_REASON_IE_IN_4WAY_DIFFERS: return "IE_IN_4WAY_DIFFERS";
+        case WIFI_REASON_GROUP_CIPHER_INVALID: return "GROUP_CIPHER_INVALID";
+        case WIFI_REASON_PAIRWISE_CIPHER_INVALID: return "PAIRWISE_CIPHER_INVALID";
+        case WIFI_REASON_AKMP_INVALID: return "AKMP_INVALID";
+        case WIFI_REASON_UNSUPP_RSN_IE_VERSION: return "UNSUPP_RSN_IE_VERSION";
+        case WIFI_REASON_INVALID_RSN_IE_CAP: return "INVALID_RSN_IE_CAP";
+        case WIFI_REASON_802_1X_AUTH_FAILED: return "802_1X_AUTH_FAILED";
+        case WIFI_REASON_CIPHER_SUITE_REJECTED: return "CIPHER_SUITE_REJECTED";
+        case WIFI_REASON_BEACON_TIMEOUT: return "BEACON_TIMEOUT";
+        case WIFI_REASON_NO_AP_FOUND: return "NO_AP_FOUND";
+        case WIFI_REASON_AUTH_FAIL: return "AUTH_FAIL";
+        case WIFI_REASON_ASSOC_FAIL: return "ASSOC_FAIL";
+        case WIFI_REASON_HANDSHAKE_TIMEOUT: return "HANDSHAKE_TIMEOUT";
+        case WIFI_REASON_CONNECTION_FAIL: return "CONNECTION_FAIL";
+        case WIFI_REASON_AP_TSF_RESET: return "AP_TSF_RESET";
+        case WIFI_REASON_ROAMING: return "ROAMING";
+        default: return "UNKNOWN";
+    }
+}
+
+static void startWiFiConnection(const char* context) {
+    if (saved_ssid.length() == 0) return;
+    WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
+    WiFi.setAutoReconnect(true);
+    WiFi.disconnect(true, true);  // Clear any stale state before connecting
+    vTaskDelay(pdMS_TO_TICKS(100));
+    WiFi.begin(saved_ssid.c_str(), saved_pass.c_str());
+    Serial.printf("[WIFI] %s to '%s'", context, saved_ssid.c_str());
+}
+
 void setup() {
     Serial.begin(115200);
     delay(500);
@@ -19,6 +71,16 @@ void setup() {
     wifiPrefs.begin("sonos_wifi", false);
     String ssid = wifiPrefs.getString("ssid", DEFAULT_WIFI_SSID);
     String pass = wifiPrefs.getString("pass", DEFAULT_WIFI_PASSWORD);
+    saved_ssid = ssid;
+    saved_pass = pass;
+
+    WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+        if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+            Serial.printf("\n[WIFI] Disconnected: reason=%u (%s)\n",
+                          info.wifi_sta_disconnected.reason,
+                          wifiDisconnectReasonToString(info.wifi_sta_disconnected.reason));
+        }
+    });
 
     // Debug: Log what was loaded from NVS
     if (ssid.length() > 0) {
@@ -38,14 +100,8 @@ void setup() {
     Serial.println("[DISPLAY] ESP32-P4 uses ST7701 backlight control (no PWM needed)");
 
     if (ssid.length() > 0) {
-        WiFi.mode(WIFI_STA);
-        WiFi.setSleep(false);
-        WiFi.setAutoReconnect(true);
-        WiFi.disconnect(true, true);  // Clear any stale state before connecting
-        vTaskDelay(pdMS_TO_TICKS(200));
         vTaskDelay(pdMS_TO_TICKS(2000)); // Wait for WiFi hardware
-        WiFi.begin(ssid.c_str(), pass.c_str());
-        Serial.printf("[WIFI] Connecting to '%s'", ssid.c_str());
+        startWiFiConnection("Connecting");
         int tries = 0;
         while (WiFi.status() != WL_CONNECTED && tries++ < 40) {
             vTaskDelay(pdMS_TO_TICKS(500));
@@ -54,7 +110,7 @@ void setup() {
         if (WiFi.status() == WL_CONNECTED) {
             Serial.printf("\n[WIFI] Connected - IP: %s\n", WiFi.localIP().toString().c_str());
         } else {
-            Serial.println("\n[WIFI] Connection failed - will retry from settings");
+            Serial.println("\n[WIFI] Connection failed - will keep retrying in background");
         }
     }
 
@@ -161,5 +217,13 @@ void loop() {
     lv_timer_handler();
     processUpdates();
     checkAutoDim();  // Check if screen should be dimmed
+    if (saved_ssid.length() > 0 && WiFi.status() != WL_CONNECTED) {
+        uint32_t now = millis();
+        if (now - last_wifi_retry_ms > 10000) {  // Retry every 10s
+            last_wifi_retry_ms = now;
+            startWiFiConnection("Retrying connection");
+            Serial.println();
+        }
+    }
     vTaskDelay(pdMS_TO_TICKS(3));  // More efficient than delay() - allows other tasks to run
 }
