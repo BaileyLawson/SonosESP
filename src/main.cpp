@@ -37,19 +37,25 @@ void setup() {
     // Brightness will be set after display_init() is called
     Serial.println("[DISPLAY] ESP32-P4 uses ST7701 backlight control (no PWM needed)");
 
-    WiFi.mode(WIFI_STA);
-    vTaskDelay(pdMS_TO_TICKS(2000)); // Wait for WiFi hardware
-    WiFi.begin(ssid.c_str(), pass.c_str());
-    Serial.printf("[WIFI] Connecting to '%s'", ssid.c_str());
-    int tries = 0;
-    while (WiFi.status() != WL_CONNECTED && tries++ < 40) {
-        vTaskDelay(pdMS_TO_TICKS(500));
-        Serial.print(".");
-    }
-    if (WiFi.status() == WL_CONNECTED) {
-        Serial.printf("\n[WIFI] Connected - IP: %s\n", WiFi.localIP().toString().c_str());
-    } else {
-        Serial.println("\n[WIFI] Connection failed - will retry from settings");
+    if (ssid.length() > 0) {
+        WiFi.mode(WIFI_STA);
+        WiFi.setSleep(false);
+        WiFi.setAutoReconnect(true);
+        WiFi.disconnect(true, true);  // Clear any stale state before connecting
+        vTaskDelay(pdMS_TO_TICKS(200));
+        vTaskDelay(pdMS_TO_TICKS(2000)); // Wait for WiFi hardware
+        WiFi.begin(ssid.c_str(), pass.c_str());
+        Serial.printf("[WIFI] Connecting to '%s'", ssid.c_str());
+        int tries = 0;
+        while (WiFi.status() != WL_CONNECTED && tries++ < 40) {
+            vTaskDelay(pdMS_TO_TICKS(500));
+            Serial.print(".");
+        }
+        if (WiFi.status() == WL_CONNECTED) {
+            Serial.printf("\n[WIFI] Connected - IP: %s\n", WiFi.localIP().toString().c_str());
+        } else {
+            Serial.println("\n[WIFI] Connection failed - will retry from settings");
+        }
     }
 
     lv_init();
