@@ -12,6 +12,8 @@ LV_IMG_DECLARE(Sonos_idnu60bqes_1);
 static String saved_ssid;
 static String saved_pass;
 static uint32_t last_wifi_retry_ms = 0;
+static bool wifi_ready = false;
+static bool wifi_has_begun = false;
 
 static const char* wifiDisconnectReasonToString(uint8_t reason) {
     switch (reason) {
@@ -52,13 +54,21 @@ static const char* wifiDisconnectReasonToString(uint8_t reason) {
 
 static void startWiFiConnection(const char* context) {
     if (saved_ssid.length() == 0) return;
-    WiFi.mode(WIFI_STA);
-    WiFi.setSleep(false);
-    WiFi.setAutoReconnect(true);
-    WiFi.disconnect(true, true);  // Clear any stale state before connecting
-    vTaskDelay(pdMS_TO_TICKS(100));
-    WiFi.begin(saved_ssid.c_str(), saved_pass.c_str());
-    Serial.printf("[WIFI] %s to '%s'", context, saved_ssid.c_str());
+    if (!wifi_ready) {
+        Serial.println("[WIFI] WiFi not ready yet - delaying connect");
+        return;
+    }
+    if (!wifi_has_begun) {
+        WiFi.mode(WIFI_STA);
+        WiFi.setSleep(false);
+        WiFi.setAutoReconnect(true);
+        WiFi.begin(saved_ssid.c_str(), saved_pass.c_str());
+        wifi_has_begun = true;
+        Serial.printf("[WIFI] %s to '%s'", context, saved_ssid.c_str());
+    } else {
+        WiFi.reconnect();
+        Serial.printf("[WIFI] %s to '%s'", context, saved_ssid.c_str());
+    }
 }
 
 void setup() {
@@ -75,7 +85,10 @@ void setup() {
     saved_pass = pass;
 
     WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
-        if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+        if (event == ARDUINO_EVENT_WIFI_READY) {
+            wifi_ready = true;
+            Serial.println("[WIFI] WiFi ready");
+        } else if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
             Serial.printf("\n[WIFI] Disconnected: reason=%u (%s)\n",
                           info.wifi_sta_disconnected.reason,
                           wifiDisconnectReasonToString(info.wifi_sta_disconnected.reason));
@@ -100,6 +113,9 @@ void setup() {
     Serial.println("[DISPLAY] ESP32-P4 uses ST7701 backlight control (no PWM needed)");
 
     if (ssid.length() > 0) {
+        WiFi.mode(WIFI_STA);
+        WiFi.setSleep(false);
+        WiFi.setAutoReconnect(true);
         vTaskDelay(pdMS_TO_TICKS(2000)); // Wait for WiFi hardware
         startWiFiConnection("Connecting");
         int tries = 0;
